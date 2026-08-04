@@ -1,12 +1,12 @@
-# Pi 5 Monitoring Stack — Setup Charter
+# Agentic Monitoring Stack — Setup Charter
 
-This is a self-contained setup charter for a Raspberry Pi 5 home-network monitoring and management stack. It is written to be handed directly to a Claude Code instance running on your human's machine. It assumes zero prior context beyond what's written here.
+This is a self-contained setup charter for a home-network monitoring and management stack on a dedicated Linux box. Reference build: Raspberry Pi 5 + USB SSD. Equally valid: an x86 mini PC, an old desktop or laptop, a VM, or any bare-metal machine. Debian-family (Debian/Ubuntu/Raspberry Pi OS) is assumed throughout; adapt package commands for other distros. It is written to be handed directly to a Claude Code instance running on your human's machine. It assumes zero prior context beyond what's written here.
 
 ---
 
 ## 1. Charter — read this first
 
-You (the Claude Code agent reading this) are setting up a centralized home-network monitoring and management stack on a Raspberry Pi 5. This design is distilled from three working production deployments — it is proven, not experimental. Your job is to **adapt it to the local network**, not to reinvent it. Do not substitute alternative tools for the stack listed below unless your human explicitly asks for a swap.
+You (the Claude Code agent reading this) are setting up a centralized home-network monitoring and management stack on the dedicated box your human has chosen (see Section 2, Question 0). This design is distilled from three working production deployments — it is proven, not experimental. Your job is to **adapt it to the local network**, not to reinvent it. Do not substitute alternative tools for the stack listed below unless your human explicitly asks for a swap.
 
 Rules for how you work through this document:
 
@@ -25,13 +25,14 @@ Before touching anything, get answers to these. Write them down somewhere durabl
 
 | # | Question | Why it matters |
 |---|---|---|
+| 0 | What hardware is this stack going on — a Raspberry Pi, another physical Linux box, or a VM? And what data storage does it have? | Selects the Phase 0 branch (0A Pi / 0B generic); VMs skip UPS-USB and UAS concerns; a machine with one big disk skips the data-root relocation. |
 | 1 | What static IP should the Pi have, and what's the LAN subnet (e.g. `192.168.1.0/24`)? | Every service in this stack is reached by a fixed IP or hostname. A DHCP-assigned Pi will break DNS records and dashboard links when it changes. |
 | 2 | Can the router's DHCP settings be changed to hand out the Pi as the DNS server? Does your human have router admin access? | Pi-hole only ad-blocks/resolves for clients that are told to use it. Without router access you can still run Pi-hole, but only devices manually configured to use it will benefit. |
 | 3 | Is Tailscale already set up on this account, and is your human willing to enable Tailscale SSH? | Tailscale SSH is used as the emergency access path independent of the LAN's DNS/router state. |
 | 4 | What hostname should the Pi have? | Used throughout local DNS records and dashboard links. |
 | 5 | Which other machines (if any) should get MeshCentral agents, and what OS are they (Windows/macOS/Linux)? | Determines which server-baked installers you'll generate in Phase 5. |
 | 6 | What phone OS (iOS/Android) will receive ntfy push alerts? | Just for pointing your human at the right app store listing — no technical difference in setup. |
-| 7 | Confirm: is the 2 TB SSD blank/formattable, or does it have existing data your human needs preserved? | Phase 0 partitions and formats it. This is destructive — get an explicit yes. |
+| 7 | Confirm: is the data drive (if any) blank/formattable, or does it have existing data your human needs preserved? | Phase 0 partitions and formats it. This is destructive — get an explicit yes. |
 | 8 | Are any of the machines work-issued or employer-owned? | **Work machines get NO agents of any kind — no MeshCentral, no Telegraf, no remote management, nothing installed.** The only permissible monitoring is a passive reachability check (ping/TCP) from Uptime Kuma, and only if your human wants it. This is a hard boundary: employer hardware and personal infrastructure must not share tooling, credentials, or management planes. |
 
 Fill in the placeholder table below once you have answers:
@@ -58,13 +59,19 @@ Fill in the placeholder table below once you have answers:
 | `<PIHOLE-API-KEY>` | Pi-hole app/API key for dashboard widgets (Pi-hole UI → Settings → API — NOT the web password) | |
 | `<KUMA-STATUS-PAGE-SLUG>` | Uptime Kuma status-page slug (created in Kuma's UI, used by the Homepage widget) | |
 
+Placeholder names say PI for historical reasons; they mean the stack box, whatever it is.
+
 ---
 
-## 3. Phase 0 — Base OS + SSD
+## 3. Phase 0 — Base OS + storage
 
-**Goal:** a booted, updated Raspberry Pi OS 64-bit install with the SSD mounted and Docker's data-root relocated to it — all before any Docker image is pulled.
+**Goal:** a booted, updated 64-bit Linux install with the data storage mounted (if applicable) and Docker's data-root relocated to it — all before any Docker image is pulled. Pick the branch that matches your human's answer to Section 2, Question 0.
 
-### 3.1 OS
+### 3.A Raspberry Pi path
+
+Use this branch for a physical Raspberry Pi 5.
+
+#### 3.A.1 OS
 
 - Flash **Raspberry Pi OS Lite, 64-bit** to the boot medium (SD card or the SSD itself if your human wants to boot from SSD — recommended if the Pi 5's bootloader supports USB boot, which it does by default on recent firmware; confirm with `rpi-eeprom-update`).
 - First boot, then:
@@ -88,7 +95,7 @@ sudo nmcli con mod "Wired connection 1" ipv4.addresses <PI-STATIC-IP>/24 ipv4.ga
 sudo nmcli con up "Wired connection 1"
 ```
 
-### 3.2 SSD
+#### 3.A.2 SSD
 
 > [!warning] USB-SATA/NVMe bridge UAS quirk
 > Some USB-to-SATA/NVMe bridge chips hang under load when using the USB Attached SCSI (UAS) protocol — symptoms are `uas_eh_abort`/`device_reset` messages in `dmesg` and the SSD dropping out under write pressure (exactly what a Docker data-root will do to it). This was seen with a JMicron bridge on a Pi 4B; the Pi 5's different USB controller and a different bridge chip may be totally fine with UAS — **UAS is faster, so only quirk it if it actually misbehaves.** If you see hangs, find the bridge's vendor:product ID with `lsusb`, then add `usb-storage.quirks=<VID>:<PID>:u` to `/boot/firmware/cmdline.txt` (same line, space-separated, no newline) and reboot.
@@ -124,7 +131,7 @@ sudo mount -a
 df -h /mnt/ssd
 ```
 
-### 3.3 Stack directory tree
+#### 3.A.3 Stack directory tree
 
 ```bash
 sudo mkdir -p /mnt/ssd/<STACK-DIR>/{pihole/etc-pihole,pihole/etc-dnsmasq.d,influxdb/data,influxdb/config,telegraf,grafana/data,grafana/provisioning,ntfy/data,ntfy/config,kuma/data,meshcentral/data,homepage/config,homarr/appdata}
@@ -133,16 +140,38 @@ sudo ln -s /mnt/ssd/<STACK-DIR> ~/stack
 
 (If you preferred `/srv/stack` directly, symlink accordingly — the rest of this document uses `~/stack` as shorthand for wherever `<STACK-DIR>` resolves.)
 
+### 3.B Generic / VM path
+
+Use this branch for any other physical Linux box (mini PC, old desktop/laptop) or a VM.
+
+- Install **Debian or Ubuntu Server** (minimal install), 64-bit.
+- Set the hostname:
+
+```bash
+sudo hostnamectl set-hostname <PI-HOSTNAME>
+```
+
+- Set a static IP via the distro's tool (`nmcli` on NetworkManager systems, or edit `/etc/netplan/*.yaml` on netplan systems), or configure a DHCP reservation on the router instead if that's simpler.
+- Data storage: if there's a second disk, mount it by UUID with `nofail` in `/etc/fstab`, same pattern as the Pi path (3.A.2). If there isn't a second disk, a plain directory on the main disk is fine — the SD-wear rationale behind the Pi path's SSD relocation doesn't apply to real SSDs or virtual disks.
+- Docker data-root relocation (4.1) is **optional** here — only do it if the OS disk is small.
+- **VMs:** give the guest 4 GB+ RAM and 40 GB+ disk. All of this stack's services run fine virtualized except USB-UPS monitoring (7.4), which belongs on the hypervisor host, not the guest.
+- Create the stack directory tree (adjust the base path if you're not using `/mnt/ssd`):
+
+```bash
+sudo mkdir -p <DATA-ROOT>/<STACK-DIR>/{pihole/etc-pihole,pihole/etc-dnsmasq.d,influxdb/data,influxdb/config,telegraf,grafana/data,grafana/provisioning,ntfy/data,ntfy/config,kuma/data,meshcentral/data,homepage/config,homarr/appdata}
+sudo ln -s <DATA-ROOT>/<STACK-DIR> ~/stack
+```
+
 ### Verify
 
 ```bash
-df -h /mnt/ssd                     # SSD mounted, correct size shown
-cat /etc/fstab | grep stackdata    # entry present with nofail
-dmesg | grep -i uas                # empty or no abort/reset errors — if errors present, apply the quirk above and re-verify
-ls ~/stack                         # directory tree exists
+df -h <DATA-ROOT>                   # data directory mounted (if a separate disk), correct size shown
+cat /etc/fstab | grep stackdata     # entry present with nofail (if a separate disk is in use)
+dmesg | grep -i uas                 # Pi/USB-SSD path only — empty or no abort/reset errors; apply the quirk above and re-verify if present
+ls ~/stack                          # directory tree exists
 ```
 
-Do not proceed to Phase 1 until the SSD survives a reboot cleanly (`sudo reboot`, then re-run `df -h /mnt/ssd`).
+Do not proceed to Phase 1 until the data directory survives a reboot cleanly (`sudo reboot`, then re-run `df -h`).
 
 ---
 
@@ -389,7 +418,7 @@ networks:
   endpoint = "unix:///var/run/docker.sock"
 
 [[inputs.temp]]
-  # Pi temperature — on Raspberry Pi this surfaces as a thermal_zone; confirm the metric name in InfluxDB after first run
+  # host temperature — on most Linux boxes this surfaces via thermal zones/hwmon; confirm the metric name after first run
 ```
 
 > [!warning] Two-token pattern
@@ -497,6 +526,8 @@ In the Kuma web UI (`http://<PI-STATIC-IP>:3001`), add a monitor per LAN device/
 Add ntfy as a Notification (Settings → Notifications → new ntfy-type notification, server URL + topic + access token), then attach it to the monitors that should page.
 
 ### 7.4 UPS monitoring (NUT) — if a UPS is present
+
+If this stack runs in a VM, run NUT on the hypervisor host instead and skip this subsection in the guest.
 
 If the Pi (or the desk it protects) has a USB-connected UPS (e.g. a CyberPower CP1500PFCLCD-class unit), run Network UPS Tools **natively on the Pi**, not in Docker — USB device passthrough adds complexity for no benefit here.
 
