@@ -32,6 +32,7 @@ Before touching anything, get answers to these. Write them down somewhere durabl
 | 5 | Which other machines (if any) should get MeshCentral agents, and what OS are they (Windows/macOS/Linux)? | Determines which server-baked installers you'll generate in Phase 5. |
 | 6 | What phone OS (iOS/Android) will receive ntfy push alerts? | Just for pointing your human at the right app store listing — no technical difference in setup. |
 | 7 | Confirm: is the 2 TB SSD blank/formattable, or does it have existing data your human needs preserved? | Phase 0 partitions and formats it. This is destructive — get an explicit yes. |
+| 8 | Are any of the machines work-issued or employer-owned? | **Work machines get NO agents of any kind — no MeshCentral, no Telegraf, no remote management, nothing installed.** The only permissible monitoring is a passive reachability check (ping/TCP) from Uptime Kuma, and only if your human wants it. This is a hard boundary: employer hardware and personal infrastructure must not share tooling, credentials, or management planes. |
 
 Fill in the placeholder table below once you have answers:
 
@@ -495,15 +496,57 @@ In the Kuma web UI (`http://<PI-STATIC-IP>:3001`), add a monitor per LAN device/
 
 Add ntfy as a Notification (Settings → Notifications → new ntfy-type notification, server URL + topic + access token), then attach it to the monitors that should page.
 
+### 7.4 UPS monitoring (NUT) — if a UPS is present
+
+If the Pi (or the desk it protects) has a USB-connected UPS (e.g. a CyberPower CP1500PFCLCD-class unit), run Network UPS Tools **natively on the Pi**, not in Docker — USB device passthrough adds complexity for no benefit here.
+
+```bash
+sudo apt install -y nut
+```
+
+- Driver: `usbhid-ups` (covers CyberPower/APC USB models).
+- `/etc/nut/ups.conf`:
+
+```ini
+[homeups]
+	driver = usbhid-ups
+	port = auto
+```
+
+- Run `upsd` + `upsmon` in standalone mode (the default single-machine setup — see `/etc/nut/nut.conf`, `MODE=standalone`).
+
+Add Telegraf coverage — append to the Pi's `telegraf.conf`:
+
+```toml
+[[inputs.upsd]]
+  server = "127.0.0.1:3493"
+```
+
+This lands battery charge, load, runtime, and input voltage in InfluxDB. Suggest a Grafana panel row for battery %, estimated runtime, and load (W).
+
+Wire ntfy on power events with an `upsmon` NOTIFYCMD wrapper script (or `upssched`) that fires on `ONBATT` / `LOWBATT` / `ONLINE` transitions:
+
+```bash
+#!/bin/bash
+# /etc/nut/notify.sh
+curl -H "Authorization: Bearer <NTFY-PUBLISHER-TOKEN>" -d "UPS: $1" http://localhost:8090/<TOPIC>
+```
+
+Point `NOTIFYCMD` in `/etc/nut/upsmon.conf` at this script (`chmod +x` it first), and add a `NOTIFYFLAG <event> SYSLOG+EXEC` line for each event that should fire it (`ONBATT`, `LOWBATT`, `ONLINE`) — without the `EXEC` flag, `NOTIFYCMD` is never invoked.
+
+> [!tip] Optional fleet graceful shutdown
+> Other always-on machines can run the NUT netclient pointed at the Pi's `upsd` (`MONITOR homeups@<PI-STATIC-IP> 1 monuser <pass> slave` in their `upsmon.conf`), so a real outage triggers ordered shutdowns — clients go down first, the Pi last. Prerequisites on the Pi first: define `monuser` (with `upsmon slave`) in `/etc/nut/upsd.users`, and add `LISTEN <PI-STATIC-IP>` to `/etc/nut/upsd.conf` — `upsd` listens on localhost only by default, so remote clients can't connect until then.
+
 ### Verify
 
 ```bash
-docker stop pihole   # or any non-critical test container
-# wait for Kuma to mark it down, confirm phone receives the ntfy push
-docker start pihole
+upsc homeups@localhost | grep battery.charge   # returns a number
 ```
 
-If the push doesn't arrive, check `docker logs ntfy` for auth failures and confirm the token/topic match what Kuma is configured to send.
+Then run a supervised drill: with your human present, unplug the UPS from wall power for ~30 seconds and confirm a phone push arrives, then plug it back in and confirm a recovery push.
+
+> [!warning] Never run the unplug drill unattended
+> Do this only with your human present. Pulling a UPS from wall power is a real power-loss test for whatever it protects.
 
 ---
 
@@ -664,9 +707,15 @@ This requires `GF_SECURITY_ALLOW_EMBEDDING=true` (already set in the Phase 3 com
 > [!warning] Mixed content
 > If the dashboard page is ever served over HTTPS, an HTTP Grafana iframe will be blocked by the browser as mixed content. Keep everything on plain HTTP for a LAN-only wallboard, or put both behind HTTPS consistently — don't mix.
 
+### 9.4 Kiosk wallboard (optional)
+
+If your human has a secondary/glanceable display (a wall-mounted panel, or a spare monitor half), build one Grafana dashboard named "Wallboard" aggregating: fleet CPU/mem, GPU utilization (if Phase 8's GPU agents exist), UPS battery (if 7.4 was adopted), and disk headroom. Embed it, or bookmark it directly, using the kiosk URL form already documented in 9.3. Uptime Kuma's own status page (`http://<PI-STATIC-IP>:3001/status/<KUMA-STATUS-PAGE-SLUG>`) makes a good companion tab.
+
+Whatever machine drives that display just needs a browser full-screening the kiosk URL — the same anonymous-Viewer access tradeoff from 9.3 applies here too.
+
 ### Verify
 
-Open both dashboards from a LAN browser and confirm: Pi-hole widget shows live block counts, Grafana widget/iframe renders a real panel, Kuma widget shows monitor status, MeshCentral and ntfy links open correctly, and Docker container-status indicators are populated (confirms the ro socket mount works).
+Open both dashboards from a LAN browser and confirm: Pi-hole widget shows live block counts, Grafana widget/iframe renders a real panel, Kuma widget shows monitor status, MeshCentral and ntfy links open correctly, and Docker container-status indicators are populated (confirms the ro socket mount works). If 9.4 was built, confirm the Wallboard dashboard renders on the kiosk display itself, not just in a regular browser tab.
 
 ---
 
@@ -680,9 +729,10 @@ Open both dashboards from a LAN browser and confirm: Pi-hole widget shows live b
 | 1 | `docker info \| grep "Docker Root Dir"` on SSD; `tailscale status` online |
 | 2 | `dig @<PI-STATIC-IP> <PI-HOSTNAME>` resolves; ad domain blocked |
 | 3 | `curl http://<PI-STATIC-IP>:8086/health` passes; Grafana Explore shows data |
-| 4 | Stop a container → Kuma red → phone push arrives |
+| 4 | Stop a container → Kuma red → phone push arrives; if 7.4 adopted, `upsc homeups@localhost` returns a battery.charge number |
 | 5 | Agents show connected in MeshCentral device group |
 | 6 | Both dashboards render live widget data, no dead links |
+| 8 | Fleet machines' hostname tags visible in InfluxDB Data Explorer within 2 minutes |
 
 ### 10.2 End-to-end drill
 
@@ -729,7 +779,65 @@ Back up the full stack directory regularly, and get a copy off the Pi itself (a 
 tar -czf ~/stack-backup-$(date +%F).tar.gz -C /mnt/ssd <STACK-DIR>
 ```
 
-This tarball includes `meshcentral/data` (agent certs — irreplaceable), `kuma/data` (monitor history/config), and `grafana/provisioning` + `grafana/data` (dashboards, datasources). Treat `meshcentral/data` as the single most important thing in this backup — losing it orphans every managed agent.
+This tarball includes `meshcentral/data` (agent certs — irreplaceable), `kuma/data` (monitor history/config), `grafana/provisioning` + `grafana/data` (dashboards, datasources), and `/etc/nut` on the Pi itself (UPS config — see 7.4, if adopted, back this up separately since it's outside `/mnt/ssd`). Treat `meshcentral/data` as the single most important thing in this backup — losing it orphans every managed agent.
+
+---
+
+## 11. Phase 8 — Fleet agents (other machines, per OS)
+
+Once the hub (Phases 0–7) is running, extend native Telegraf coverage to other machines on the network — all pushing to the Pi at `http://<PI-STATIC-IP>:8086` with the literal (non-env-var) write token; the env-var expansion gotcha from 6.1 applies here too, since none of these are Docker containers.
+
+> [!warning] Work machines are excluded
+> Per Section 2, Question 8: never install any agent from this section — Telegraf, MeshCentral, or otherwise — on a work-issued or employer-owned machine. The most that's permissible there is a passive Kuma reachability check.
+
+### 11.1 macOS
+
+```bash
+brew install telegraf
+```
+
+Config lives at `/opt/homebrew/etc/telegraf.conf` (Apple Silicon). Use the same portable input set from 6.1 (cpu/mem/disk/diskio/net/system/swap) so measurement names stay consistent across the fleet.
+
+```bash
+brew services start telegraf
+```
+
+### 11.2 Windows
+
+Install via the official zip/MSI as a service. The portable input set works cross-platform — keep measurement-name parity with the Pi's own config. Telegraf on Windows supports a config-directory pattern for drop-in `.conf` files if you need to layer machine-specific inputs on top of the shared base.
+
+> [!warning] Gaming-machine GPU polling causes stutter
+> Polling GPU metrics (`nvidia_smi` input, LibreHardwareMonitor) at short intervals causes visible in-game stutter — verified on a production gaming rig. On any machine used for gaming, either poll GPU inputs at 300s or skip them entirely. The cheap gopsutil-based inputs (cpu/mem/disk/net) are safe at default intervals.
+
+### 11.3 Linux x86/ARM64 (including NVIDIA AI boxes — DGX Spark class)
+
+Use the influxdata apt repo.
+
+> [!warning] Debian 13+ keyring gotcha
+> Use the `influxdata-archive.key`, not the older compatibility key — the compat key is rejected on Debian 13+.
+
+Use the same portable input set as everywhere else. On NVIDIA boxes, add:
+
+```toml
+[[inputs.nvidia_smi]]
+```
+
+This surfaces GPU utilization, VRAM, temperature, and power. A headless compute box has no stutter concern — a 60s interval is fine. Suggest a per-GPU Grafana row for these.
+
+### 11.4 MeshCentral agents
+
+Supported on all three OS families, including Linux arm64. Always install via the server-baked installer per Phase 5 — never hand-build a `.msh` config.
+
+> [!tip] Wake-on-LAN for free
+> MeshCentral can wake sleeping machines on the same LAN. Enable WoL in each machine's firmware/adapter settings to get remote wake for free once the agent is installed.
+
+### 11.5 Kuma coverage
+
+Add one Uptime Kuma monitor per fleet machine, per the check-type guidance in 7.3 (TCP-by-DNS-name preferred over ping; no notifications on routine user machines).
+
+### Verify
+
+From each agented machine, confirm in InfluxDB's Data Explorer that its hostname tag appears within 2 minutes of the agent starting. For NVIDIA boxes, confirm GPU measurements are present alongside the standard set.
 
 ---
 
