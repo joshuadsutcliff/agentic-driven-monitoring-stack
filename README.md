@@ -1,17 +1,18 @@
-# Pi 5 Monitoring Stack
+# Agentic Monitoring Stack
 
-A complete home-network monitoring and management stack for a Raspberry Pi 5, installed by your AI coding agent instead of a shell script.
+A complete home-network monitoring and management stack for any dedicated Linux box, installed by your AI coding agent instead of a shell script. The reference build is a Raspberry Pi 5 with an attached SSD, but the charter works the same on an x86 mini PC, an old desktop, or a VM.
 
 There is no installer here. The repo's centerpiece is [`CHARTER.md`](CHARTER.md): a phase-by-phase setup charter written to be handed to an AI agent (Claude Code, or any agent that can run shell commands). The agent reads the charter, interviews you for your network details, then builds and verifies the stack on your hardware.
 
 ## What you get
 
-One Raspberry Pi 5 running, in Docker:
+One small always-on box running, in Docker:
 
 - **Pi-hole**: LAN-wide DNS, ad-blocking, and local hostnames for every device
 - **InfluxDB 2.x + Telegraf + Grafana**: metrics collection and dashboards, extensible to every machine in the house
 - **ntfy**: push alerts to your phone, self-hosted
 - **Uptime Kuma**: up/down monitoring with alert routing
+- **NUT**: UPS monitoring with phone alerts on power loss and ordered fleet shutdown (physical builds with a USB UPS)
 - **MeshCentral**: self-hosted remote desktop and management for your other machines
 - **Homepage + Homarr**: two dashboard front-ends integrating all of the above
 
@@ -25,12 +26,12 @@ Every phase ends with explicit verification commands and expected results. The r
 
 ## How to use it
 
-1. Set up a Raspberry Pi 5 (64-bit Raspberry Pi OS) with an attached SSD, reachable over SSH.
-2. Open Claude Code (or your agent of choice) with access to the Pi: either running on the Pi directly, or on another machine that can SSH to it.
+1. Set up a dedicated Linux box (64-bit Debian-family OS): a Raspberry Pi 5 with an SSD, a mini PC, an old desktop, or a VM, reachable over SSH.
+2. Open Claude Code (or your agent of choice) with access to the box: either running on it directly, or on another machine that can SSH to it.
 3. Give it this file: `Read CHARTER.md and follow it.`
 4. Answer its questions (static IP, router access, Tailscale account, which machines to manage), then let it work phase by phase.
 
-Requirements: Raspberry Pi 5 (4 GB+ RAM, 8 GB recommended), an external SSD (USB or NVMe), a Tailscale account (free tier is fine), and router admin access if you want network-wide ad-blocking.
+Requirements: a dedicated 64-bit Linux box (4 GB+ RAM; Pi 5, x86, or VM all work), storage for metrics history, a Tailscale account (free tier is fine), and router admin access if you want network-wide ad-blocking.
 
 ## Provenance
 
